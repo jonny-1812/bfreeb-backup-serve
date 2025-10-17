@@ -111,6 +111,110 @@ async function upsert(table, rows, conflict = "id") {
   console.log("Importing:", key);
 
   const data = await readJson(key);
+  // --- (A) Optional summary so we see what's inside the backup ---
+if (process.env.DEBUG_SUMMARY === "1") {
+  const entries = Object.entries(data).map(([k, v]) => {
+    const t = Array.isArray(v) ? `array(${v.length})` : typeof v;
+    return `${k}: ${t}`;
+  });
+  console.log("[SUMMARY] Top-level keys:", entries);
+}
+
+// --- (B) Store raw backup for traceability (if you created raw_backups) ---
+try {
+  await supabase.from("raw_backups").insert({ s3_key: key, payload: data });
+} catch (e) {
+  console.warn("raw_backups insert warning:", e.message || e);
+}
+
+// --- (C) Flexible extractors: try multiple common names/paths ---
+function pickArray(root, candidates) {
+  for (const path of candidates) {
+    const parts = path.split(".");
+    let cur = root;
+    for (const p of parts) {
+      if (cur && Object.prototype.hasOwnProperty.call(cur, p)) cur = cur[p];
+      else { cur = undefined; break; }
+    }
+    if (Array.isArray(cur)) return cur;
+  }
+  return [];
+}
+
+// Try common Base44 shapes (adjust later if needed)
+const rawCustomers = pickArray(data, ["customers","Customers","Customer","data.customers","data.Customer"]);
+const rawDocuments = pickArray(data, ["documents","Documents","Document","data.documents","data.Document"]);
+const rawOrders    = pickArray(data, ["orders","Orders","Order","data.orders","data.Order"]);
+
+// --- (D) Map objects to your Supabase columns (tweak as needed) ---
+function idLike(v) { return v?.id ?? v?._id ?? v?.uuid ?? v?.customer_id ?? v?.document_id ?? v?.order_id; }
+
+function mapCustomer(c) {
+  return {
+    id:         idLike(c),
+    full_name:  c.full_name ?? c.name ?? [c.first_name, c.last_name].filter(Boolean).join(" ") || "Unknown",
+    email:      c.email ?? c.mail ?? null,
+    phone:      c.phone ?? c.mobile ?? c.tel ?? null,
+    created_at: c.created_at ?? c.createdAt ?? null
+  };
+}
+
+function mapDocument(d) {
+  const customerRef =
+    d.customer_id ?? d.client_id ?? d.customerId ?? d.clientId ??
+    d.client?.id ?? d.customer?.id ?? null;
+
+  const title =
+    d.title ?? d.reference_number ?? d.reference ?? d.number ?? d.name ?? "Document";
+
+  const url =
+    d.public_url ?? d.share_url ??
+    (d.share_token ? `https://bfree-b-52180fe7.base44.app/PublicDocumentView?token=${d.share_token}` : null);
+
+  const status = d.status ?? (d.missing === true ? "missing" : "present");
+
+  return {
+    id:          idLike(d),
+    customer_id: customerRef || null,
+    title,
+    url,
+    status,
+    created_at:  d.created_at ?? d.createdAt ?? null
+  };
+}
+
+function mapOrder(o) {
+  const customerRef =
+    o.customer_id ?? o.client_id ?? o.customerId ?? o.clientId ??
+    o.client?.id ?? o.customer?.id ?? null;
+
+  const total    = o.total ?? o.amount ?? o.sum ?? 0;
+  const currency = o.currency ?? o.curr ?? "ILS";
+  const paid     = o.paid ?? o.is_paid ?? (o.status === "paid");
+
+  return {
+    id:          idLike(o),
+    customer_id: customerRef || null,
+    total,
+    currency,
+    paid,
+    created_at:  o.created_at ?? o.createdAt ?? null
+  };
+}
+
+const customers = rawCustomers.map(mapCustomer).filter(r => r.id);
+const documents = rawDocuments.map(mapDocument).filter(r => r.id);
+const orders    = rawOrders.map(mapOrder).filter(r => r.id);
+
+console.log(`[MAP] customers=${customers.length}, documents=${documents.length}, orders=${orders.length]`);
+
+// Upsert in chunks
+await upsert("customers", customers);
+await upsert("documents", documents);
+await upsert("orders", orders);
+
+console.log("[UPSERT] done");
+
 
   // ⚠️ התאמה לשמות המפתחות בדיוק כפי שנמצאים בקבצי ה-JSON שלך ב-S3
   await upsert("customers",  data.customers);
