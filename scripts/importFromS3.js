@@ -11,7 +11,8 @@ const {
   S3_PREFIX,              // e.g. "backups/"
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE,
-  DEBUG_LIST              // optional: set to "1" to print listed keys
+  DEBUG_LIST,             // optional: "1" to print listed keys
+  DEBUG_SUMMARY           // optional: "1" to print summarized keys (we also print a hard summary always)
 } = process.env;
 
 // ---- Sanity checks ----
@@ -24,7 +25,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
   process.exit(1);
 }
 
-// ---- AWS S3 client (explicit credentials to avoid surprises) ----
+// ---- AWS S3 client ----
 const s3 = new S3Client({
   region: AWS_REGION,
   credentials: AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY
@@ -37,56 +38,36 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
 
 // ---- Helpers ----
 function normalizePrefix(p = "") {
-  // no leading slash, ensure trailing slash only once
-  p = p.replace(/^\/+/, "");
+  p = p.replace(/^\/+/, "");        // remove leading slashes
   if (p && !p.endsWith("/")) p += "/";
   return p;
 }
-
 function isBackupKey(key = "") {
   return key.endsWith(".json") || key.endsWith(".json.gz");
 }
-
 async function listAllObjects(bucket, prefix) {
   let all = [];
   let token;
-
   do {
     const out = await s3.send(new ListObjectsV2Command({
       Bucket: bucket,
-      Prefix: prefix,                // already normalized
+      Prefix: prefix,
       ContinuationToken: token
     }));
-
-    const contents = out.Contents || [];
-    all.push(...contents);
-
+    all.push(...(out.Contents || []));
     token = out.IsTruncated ? out.NextContinuationToken : undefined;
   } while (token);
-
   return all;
 }
-
 async function latestKey() {
-  const prefix = normalizePrefix(S3_PREFIX || "");   // e.g. "backups/"
-
+  const prefix = normalizePrefix(S3_PREFIX || "");
   const objects = await listAllObjects(S3_BUCKET, prefix);
-  const files = objects
-    .filter(o => o && o.Key && isBackupKey(o.Key));
-
-  if (DEBUG_LIST === "1") {
-    console.log("[S3] Listed keys under prefix:", prefix, files.map(f => f.Key));
-  }
-
-  if (!files.length) {
-    throw new Error("No backup files under prefix");
-  }
-
-  // Sort by LastModified (desc) and pick the newest
+  const files = objects.filter(o => o?.Key && isBackupKey(o.Key));
+  if (DEBUG_LIST === "1") console.log("[S3] Keys under prefix", prefix, files.map(f => f.Key));
+  if (!files.length) throw new Error("No backup files under prefix");
   files.sort((a, b) => (b.LastModified?.getTime?.() || 0) - (a.LastModified?.getTime?.() || 0));
   return files[0].Key;
 }
-
 async function readJson(key) {
   const obj = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
   const isGz = key.endsWith(".gz");
@@ -96,38 +77,7 @@ async function readJson(key) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-async function upsert(table, rows, conflict = "id") {
-  if (!rows?.length) return;
-  const size = 1000;
-  for (let i = 0; i < rows.length; i += size) {
-    const batch = rows.slice(i, i + size);
-    const { error } = await supabase.from(table).upsert(batch, { onConflict: conflict });
-    if (error) throw error;
-  }
-}
-
-(async () => {
-  const key = await latestKey();
-  console.log("Importing:", key);
-
-  const data = await readJson(key);
-  // --- (A) Optional summary so we see what's inside the backup ---
-if (process.env.DEBUG_SUMMARY === "1") {
-  const entries = Object.entries(data).map(([k, v]) => {
-    const t = Array.isArray(v) ? `array(${v.length})` : typeof v;
-    return `${k}: ${t}`;
-  });
-  console.log("[SUMMARY] Top-level keys:", entries);
-}
-
-// --- (B) Store raw backup for traceability (if you created raw_backups) ---
-try {
-  await supabase.from("raw_backups").insert({ s3_key: key, payload: data });
-} catch (e) {
-  console.warn("raw_backups insert warning:", e.message || e);
-}
-
-// --- (C) Flexible extractors: try multiple common names/paths ---
+// ---------- Small utils ----------
 function pickArray(root, candidates) {
   for (const path of candidates) {
     const parts = path.split(".");
@@ -140,15 +90,21 @@ function pickArray(root, candidates) {
   }
   return [];
 }
-
-// Try common Base44 shapes (adjust later if needed)
-const rawCustomers = pickArray(data, ["customers","Customers","Customer","data.customers","data.Customer"]);
-const rawDocuments = pickArray(data, ["documents","Documents","Document","data.documents","data.Document"]);
-const rawOrders    = pickArray(data, ["orders","Orders","Order","data.orders","data.Order"]);
-
-// --- (D) Map objects to your Supabase columns (tweak as needed) ---
+async function upsert(table, rows, conflict = "id") {
+  if (!rows?.length) return { count: 0 };
+  const size = 1000;
+  let total = 0;
+  for (let i = 0; i < rows.length; i += size) {
+    const batch = rows.slice(i, i + size);
+    const { error } = await supabase.from(table).upsert(batch, { onConflict: conflict });
+    if (error) throw error;
+    total += batch.length;
+  }
+  return { count: total };
+}
 function idLike(v) { return v?.id ?? v?._id ?? v?.uuid ?? v?.customer_id ?? v?.document_id ?? v?.order_id; }
 
+// ---------- Mappers ----------
 function mapCustomer(c) {
   return {
     id:         idLike(c),
@@ -158,7 +114,6 @@ function mapCustomer(c) {
     created_at: c.created_at ?? c.createdAt ?? null
   };
 }
-
 function mapDocument(d) {
   const customerRef =
     d.customer_id ?? d.client_id ?? d.customerId ?? d.clientId ??
@@ -182,7 +137,6 @@ function mapDocument(d) {
     created_at:  d.created_at ?? d.createdAt ?? null
   };
 }
-
 function mapOrder(o) {
   const customerRef =
     o.customer_id ?? o.client_id ?? o.customerId ?? o.clientId ??
@@ -202,25 +156,56 @@ function mapOrder(o) {
   };
 }
 
-const customers = rawCustomers.map(mapCustomer).filter(r => r.id);
-const documents = rawDocuments.map(mapDocument).filter(r => r.id);
-const orders    = rawOrders.map(mapOrder).filter(r => r.id);
+(async () => {
+  const key = await latestKey();
+  console.log("Importing:", key);
 
-console.log(`[MAP] customers=${customers.length}, documents=${documents.length}, orders=${orders.length]`);
+  const data = await readJson(key);
 
-// Upsert in chunks
-await upsert("customers", customers);
-await upsert("documents", documents);
-await upsert("orders", orders);
+  // ---- HARD SUMMARY (always print so we see what's inside) ----
+  try {
+    const keys = Object.keys(data || {});
+    console.log("[SUMMARY/HARD] Top-level keys:", keys);
+    for (const k of keys) {
+      const v = data[k];
+      if (Array.isArray(v)) console.log(`[SUMMARY/HARD] ${k}: array(${v.length})`);
+      else console.log(`[SUMMARY/HARD] ${k}: ${typeof v}`);
+    }
+  } catch (e) {
+    console.log("[SUMMARY/HARD] failed to print keys:", e?.message || e);
+  }
+  // Optional soft summary too
+  if (DEBUG_SUMMARY === "1") {
+    const entries = Object.entries(data).map(([k, v]) => {
+      const t = Array.isArray(v) ? `array(${v.length})` : typeof v;
+      return `${k}: ${t}`;
+    });
+    console.log("[SUMMARY] Top-level keys:", entries);
+  }
 
-console.log("[UPSERT] done");
+  // Save raw JSON for traceability (table must exist)
+  try {
+    await supabase.from("raw_backups").insert({ s3_key: key, payload: data });
+  } catch (e) {
+    console.warn("raw_backups insert warning:", e.message || e);
+  }
 
+  // ---------- Pick arrays (try common shapes; adjust if needed) ----------
+  const rawCustomers = pickArray(data, ["customers","Customers","Customer","data.customers","data.Customer"]);
+  const rawDocuments = pickArray(data, ["documents","Documents","Document","data.documents","data.Document"]);
+  const rawOrders    = pickArray(data, ["orders","Orders","Order","data.orders","data.Order"]);
 
-  // ⚠️ התאמה לשמות המפתחות בדיוק כפי שנמצאים בקבצי ה-JSON שלך ב-S3
-  await upsert("customers",  data.customers);
-  await upsert("documents",  data.documents);
-  await upsert("orders",     data.orders);
+  const customers = rawCustomers.map(mapCustomer).filter(r => r.id);
+  const documents = rawDocuments.map(mapDocument).filter(r => r.id);
+  const orders    = rawOrders.map(mapOrder).filter(r => r.id);
 
+  console.log(`[MAP] customers=${customers.length}, documents=${documents.length}, orders=${orders.length}`);
+
+  const r1 = await upsert("customers", customers);
+  const r2 = await upsert("documents", documents);
+  const r3 = await upsert("orders", orders);
+
+  console.log(`[UPSERT] customers=${r1.count || 0}, documents=${r2.count || 0}, orders=${r3.count || 0}`);
   console.log("Import completed");
   process.exit(0);
 })().catch(e => {
