@@ -106,14 +106,19 @@ function idLike(v) { return v?.id ?? v?._id ?? v?.uuid ?? v?.customer_id ?? v?.d
 
 // ---------- Mappers ----------
 function mapCustomer(c) {
+  const composed = [c.first_name, c.last_name].filter(Boolean).join(" ");
+  const name = c.full_name ?? c.name ?? composed; // only ?? chain
+  const safeName = (name && name.trim()) ? name : "Unknown"; // OR handled separately
+
   return {
     id:         idLike(c),
-    full_name:  c.full_name ?? c.name ?? [c.first_name, c.last_name].filter(Boolean).join(" ") || "Unknown",
+    full_name:  safeName,
     email:      c.email ?? c.mail ?? null,
     phone:      c.phone ?? c.mobile ?? c.tel ?? null,
     created_at: c.created_at ?? c.createdAt ?? null
   };
 }
+
 function mapDocument(d) {
   const customerRef =
     d.customer_id ?? d.client_id ?? d.customerId ?? d.clientId ??
