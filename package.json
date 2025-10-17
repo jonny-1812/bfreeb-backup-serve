@@ -10,6 +10,5 @@
     "@aws-sdk/client-s3": "^3.670.0",
     "@supabase/supabase-js": "^2.45.0",
     "express": "^4.19.2",
-    "zlib": "^1.0.5"
   }
 }
