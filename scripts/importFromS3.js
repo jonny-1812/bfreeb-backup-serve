@@ -63,8 +63,8 @@ async function latestKey() {
   const prefix = normalizePrefix(S3_PREFIX || "");
   const objects = await listAllObjects(S3_BUCKET, prefix);
   const files = objects.filter(o => o?.Key && isBackupKey(o.Key));
-  if (DEBUG_LIST === "1") console.log("[S3] Keys under prefix", prefix, files.map(f => f.Key));
   if (!files.length) throw new Error("No backup files under prefix");
+  if (DEBUG_LIST === "1") console.log("[S3] Keys under prefix", prefix, files.map(f => f.Key));
   files.sort((a, b) => (b.LastModified?.getTime?.() || 0) - (a.LastModified?.getTime?.() || 0));
   return files[0].Key;
 }
@@ -107,8 +107,8 @@ function idLike(v) { return v?.id ?? v?._id ?? v?.uuid ?? v?.customer_id ?? v?.d
 // ---------- Mappers ----------
 function mapCustomer(c) {
   const composed = [c.first_name, c.last_name].filter(Boolean).join(" ");
-  const name = c.full_name ?? c.name ?? composed; // only ?? chain
-  const safeName = (name && name.trim()) ? name : "Unknown"; // OR handled separately
+  const name = c.full_name ?? c.name ?? composed;           // only ?? chain
+  const safeName = (name && name.trim()) ? name : "Unknown";
 
   return {
     id:         idLike(c),
@@ -118,7 +118,6 @@ function mapCustomer(c) {
     created_at: c.created_at ?? c.createdAt ?? null
   };
 }
-
 function mapDocument(d) {
   const customerRef =
     d.customer_id ?? d.client_id ?? d.customerId ?? d.clientId ??
@@ -188,6 +187,22 @@ function mapOrder(o) {
     console.log("[SUMMARY] Top-level keys:", entries);
   }
 
+  // Print what's inside data.entities (where Base44 exports usually live)
+  if (data.entities && typeof data.entities === "object") {
+    const ekeys = Object.keys(data.entities);
+    console.log("[ENTITIES] keys:", ekeys);
+    for (const k of ekeys) {
+      const v = data.entities[k];
+      if (Array.isArray(v)) {
+        console.log(`[ENTITIES] ${k}: array(${v.length})`);
+      } else {
+        console.log(`[ENTITIES] ${k}: ${typeof v}`);
+      }
+    }
+  } else {
+    console.log("[ENTITIES] Missing or not an object");
+  }
+
   // Save raw JSON for traceability (table must exist)
   try {
     await supabase.from("raw_backups").insert({ s3_key: key, payload: data });
@@ -195,10 +210,24 @@ function mapOrder(o) {
     console.warn("raw_backups insert warning:", e.message || e);
   }
 
-  // ---------- Pick arrays (try common shapes; adjust if needed) ----------
-  const rawCustomers = pickArray(data, ["customers","Customers","Customer","data.customers","data.Customer"]);
-  const rawDocuments = pickArray(data, ["documents","Documents","Document","data.documents","data.Document"]);
-  const rawOrders    = pickArray(data, ["orders","Orders","Order","data.orders","data.Order"]);
+  // ---------- Pick arrays (try common shapes; now also under entities.*) ----------
+  const rawCustomers = pickArray(data, [
+    "customers","Customers","Customer",
+    "data.customers","data.Customer",
+    "entities.customers","entities.Customers","entities.Customer"
+  ]);
+
+  const rawDocuments = pickArray(data, [
+    "documents","Documents","Document",
+    "data.documents","data.Document",
+    "entities.documents","entities.Documents","entities.Document"
+  ]);
+
+  const rawOrders = pickArray(data, [
+    "orders","Orders","Order",
+    "data.orders","data.Order",
+    "entities.orders","entities.Orders","entities.Order"
+  ]);
 
   const customers = rawCustomers.map(mapCustomer).filter(r => r.id);
   const documents = rawDocuments.map(mapDocument).filter(r => r.id);
