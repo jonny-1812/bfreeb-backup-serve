@@ -165,7 +165,18 @@ function mapDocument(d) {
     d.public_url ?? d.share_url ??
     (d.share_token ? `https://bfree-b-52180fe7.base44.app/PublicDocumentView?token=${d.share_token}` : null);
 
-  const status = d.status ?? (d.missing === true ? "missing" : "present");
+  // 1) קח את הסטטוס המקורי אם יש
+  const rawStatus =
+    d.status ?? (d.missing === true ? "missing" : null);
+
+  // 2) הגדר את הסטטוסים המותרים בפועל בטבלה שלך
+  // אם אינך יודע עדיין, השאר ['present','missing'] — זה יעבור את האילוץ שראינו.
+  const ALLOWED = new Set(["present", "missing"]);
+
+  // 3) נרמל: אם לא מותר/ריק → 'present'
+  const status = ALLOWED.has(String(rawStatus || "").toLowerCase())
+    ? String(rawStatus).toLowerCase()
+    : "present";
 
   return {
     id:          mapId(d.id ?? d._id ?? d.uuid ?? d.document_id),
@@ -176,6 +187,7 @@ function mapDocument(d) {
     created_at:  d.created_at ?? d.createdAt ?? null
   };
 }
+
 function mapOrder(o) {
   const customerRef =
     o.customer_id ?? o.client_id ?? o.customerId ?? o.clientId ??
