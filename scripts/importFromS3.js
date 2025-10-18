@@ -2,6 +2,7 @@
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
 import zlib from "zlib";
+import { createHash } from "crypto";
 
 const {
   AWS_REGION,
@@ -12,7 +13,7 @@ const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE,
   DEBUG_LIST,             // optional: "1" to print listed keys
-  DEBUG_SUMMARY           // optional: "1" to print summarized keys (we also print a hard summary always)
+  DEBUG_SUMMARY           // optional: "1" to print summarized keys
 } = process.env;
 
 // ---- Sanity checks ----
@@ -77,6 +78,41 @@ async function readJson(key) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+// ---------- ID helpers: deterministic UUID v5 from any string ----------
+const NAMESPACE = "bfreeb-backup-namespace"; // קבוע דטרמיניסטי. אפשר לשנות, רק להשאיר קבוע לאורך זמן.
+
+function uuidFromString(input) {
+  // v5(uuid) approximately: SHA-1(namespace + input) with version/variant bits set.
+  // We make a 16-byte buffer from sha1 and format as UUID.
+  const hash = createHash("sha1").update(NAMESPACE).update(String(input)).digest();
+  // Use first 16 bytes
+  const bytes = Buffer.from(hash.subarray(0, 16));
+  // set version 5 (0101) in byte 6
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  // set RFC 4122 variant in byte 8
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = bytes.toString("hex");
+  return [
+    hex.substring(0, 8),
+    hex.substring(8, 12),
+    hex.substring(12, 16),
+    hex.substring(16, 20),
+    hex.substring(20)
+  ].join("-");
+}
+
+function mapId(anyId) {
+  if (!anyId) return null;
+  const s = String(anyId);
+  // If it's already a canonical UUID, use as-is
+  if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s)) {
+    return s.toLowerCase();
+  }
+  // Otherwise, derive deterministic UUID v5 from the string
+  return uuidFromString(s);
+}
+
 // ---------- Small utils ----------
 function pickArray(root, candidates) {
   for (const path of candidates) {
@@ -102,7 +138,6 @@ async function upsert(table, rows, conflict = "id") {
   }
   return { count: total };
 }
-function idLike(v) { return v?.id ?? v?._id ?? v?.uuid ?? v?.customer_id ?? v?.document_id ?? v?.order_id; }
 
 // ---------- Mappers ----------
 function mapCustomer(c) {
@@ -111,7 +146,7 @@ function mapCustomer(c) {
   const safeName = (name && name.trim()) ? name : "Unknown";
 
   return {
-    id:         idLike(c),
+    id:         mapId(c.id ?? c._id ?? c.uuid ?? c.customer_id),
     full_name:  safeName,
     email:      c.email ?? c.mail ?? null,
     phone:      c.phone ?? c.mobile ?? c.tel ?? null,
@@ -133,8 +168,8 @@ function mapDocument(d) {
   const status = d.status ?? (d.missing === true ? "missing" : "present");
 
   return {
-    id:          idLike(d),
-    customer_id: customerRef || null,
+    id:          mapId(d.id ?? d._id ?? d.uuid ?? d.document_id),
+    customer_id: mapId(customerRef),
     title,
     url,
     status,
@@ -151,8 +186,8 @@ function mapOrder(o) {
   const paid     = o.paid ?? o.is_paid ?? (o.status === "paid");
 
   return {
-    id:          idLike(o),
-    customer_id: customerRef || null,
+    id:          mapId(o.id ?? o._id ?? o.uuid ?? o.order_id),
+    customer_id: mapId(customerRef),
     total,
     currency,
     paid,
@@ -178,7 +213,6 @@ function mapOrder(o) {
   } catch (e) {
     console.log("[SUMMARY/HARD] failed to print keys:", e?.message || e);
   }
-  // Optional soft summary too
   if (DEBUG_SUMMARY === "1") {
     const entries = Object.entries(data).map(([k, v]) => {
       const t = Array.isArray(v) ? `array(${v.length})` : typeof v;
@@ -187,46 +221,43 @@ function mapOrder(o) {
     console.log("[SUMMARY] Top-level keys:", entries);
   }
 
-  // Print what's inside data.entities (where Base44 exports usually live)
+  // Print what's inside data.entities
   if (data.entities && typeof data.entities === "object") {
     const ekeys = Object.keys(data.entities);
     console.log("[ENTITIES] keys:", ekeys);
     for (const k of ekeys) {
       const v = data.entities[k];
-      if (Array.isArray(v)) {
-        console.log(`[ENTITIES] ${k}: array(${v.length})`);
-      } else {
-        console.log(`[ENTITIES] ${k}: ${typeof v}`);
-      }
+      if (Array.isArray(v)) console.log(`[ENTITIES] ${k}: array(${v.length})`);
+      else console.log(`[ENTITIES] ${k}: ${typeof v}`);
     }
   } else {
     console.log("[ENTITIES] Missing or not an object");
   }
 
-  // Save raw JSON for traceability (table must exist)
+  // Save raw JSON for traceability (requires table raw_backups)
   try {
     await supabase.from("raw_backups").insert({ s3_key: key, payload: data });
   } catch (e) {
     console.warn("raw_backups insert warning:", e.message || e);
   }
 
-  // ---------- Pick arrays (try common shapes; now also under entities.*) ----------
+  // ---------- Pick arrays (under entities.*) ----------
   const rawCustomers = pickArray(data, [
+    "entities.customers","entities.Customers","entities.Customer",
     "customers","Customers","Customer",
-    "data.customers","data.Customer",
-    "entities.customers","entities.Customers","entities.Customer"
+    "data.customers","data.Customer"
   ]);
 
   const rawDocuments = pickArray(data, [
+    "entities.documents","entities.Documents","entities.Document",
     "documents","Documents","Document",
-    "data.documents","data.Document",
-    "entities.documents","entities.Documents","entities.Document"
+    "data.documents","data.Document"
   ]);
 
   const rawOrders = pickArray(data, [
+    "entities.orders","entities.Orders","entities.Order",
     "orders","Orders","Order",
-    "data.orders","data.Order",
-    "entities.orders","entities.Orders","entities.Order"
+    "data.orders","data.Order"
   ]);
 
   const customers = rawCustomers.map(mapCustomer).filter(r => r.id);
