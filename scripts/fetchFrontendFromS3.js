@@ -1,6 +1,3 @@
-הנה הגרסה המתוקנת של `scripts/fetchFrontendFromS3.js` עם הגדרת endpoinט מפורש לאזור ה־S3 (מונע שגיאת `PermanentRedirect`) ותמיכה ב־`AWS_SESSION_TOKEN` אם יש לך אישורים זמניים. שמתי גם לוג קצר שתראה את ה־region/bucket בזמן ריצה.
-
-```js
 // scripts/fetchFrontendFromS3.js
 import fs from "fs";
 import path from "path";
@@ -122,4 +119,3 @@ if (import.meta.url === `file://${__filename}`) {
     (e) => { console.error(e); process.exit(1); }
   );
 }
-```
