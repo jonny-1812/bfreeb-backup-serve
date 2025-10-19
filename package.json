@@ -2,11 +2,6 @@
   "name": "bfreeb-backup-server",
   "version": "1.0.0",
   "type": "module",
-  "scripts": {
-    "start": "node server.js",
-    "import": "node scripts/importFromS3.js",
-    "build": "mkdir -p build && echo '<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>bfreeb DR</title></head><body><h1>✅ Backup UI is served</h1><p>If you see this, Express is serving the frontend correctly.</p></body></html>' > build/index.html"
-  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.670.0",
     "@supabase/supabase-js": "^2.45.0",
@@ -14,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "mkdir -p build && echo '<!doctype html><html><head><meta charset=\"utf-8\"><title>Backup Server</title></head><body><h1>✅ Backup server is running</h1></body></html>' > build/index.html"
+    "build": "mkdir -p build && echo '<!doctype html><html><head><meta charset=\"utf-8\"><title>Backup Server</title></head><body><h1>✅ Backup server is running</h1></body></html>' > build/index.html",
+    "import": "node scripts/importFromS3.js"
   }
-
 }
