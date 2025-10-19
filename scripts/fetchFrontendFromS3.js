@@ -1,3 +1,6 @@
+הנה הגרסה המתוקנת של `scripts/fetchFrontendFromS3.js` עם הגדרת endpoinט מפורש לאזור ה־S3 (מונע שגיאת `PermanentRedirect`) ותמיכה ב־`AWS_SESSION_TOKEN` אם יש לך אישורים זמניים. שמתי גם לוג קצר שתראה את ה־region/bucket בזמן ריצה.
+
+```js
 // scripts/fetchFrontendFromS3.js
 import fs from "fs";
 import path from "path";
@@ -12,6 +15,7 @@ const {
   AWS_REGION,
   AWS_ACCESS_KEY_ID,
   AWS_SECRET_ACCESS_KEY,
+  AWS_SESSION_TOKEN,        // אופציונלי – אם יש אישורים זמניים
   FRONTEND_S3_BUCKET,
   FRONTEND_S3_PREFIX
 } = process.env;
@@ -47,11 +51,22 @@ export default async function fetchFrontendFromS3() {
     throw new Error("Missing AWS_REGION or FRONTEND_S3_BUCKET");
   }
 
+  // לוג דיאגנוסטי
+  console.log("[fetchFrontendFromS3] REGION=", AWS_REGION, "BUCKET=", FRONTEND_S3_BUCKET);
+
+  // קונפיגורציה מפורשת לאזור (מונע PermanentRedirect)
   const s3 = new S3Client({
-    region: AWS_REGION,
-    credentials: (AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY)
-      ? { accessKeyId: AWS_ACCESS_KEY_ID, secretAccessKey: AWS_SECRET_ACCESS_KEY }
-      : undefined
+    region: AWS_REGION,                                  // לדוגמה: "eu-north-1"
+    endpoint: `https://s3.${AWS_REGION}.amazonaws.com`,  // מצביע ישירות לאנדפוינט של האזור
+    forcePathStyle: false,                                // bucket רגיל (לא דורש path-style)
+    credentials:
+      (AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY)
+        ? {
+            accessKeyId: AWS_ACCESS_KEY_ID,
+            secretAccessKey: AWS_SECRET_ACCESS_KEY,
+            sessionToken: AWS_SESSION_TOKEN || undefined,
+          }
+        : undefined,
   });
 
   const prefix = normalizePrefix(FRONTEND_S3_PREFIX || "");
@@ -82,7 +97,7 @@ export default async function fetchFrontendFromS3() {
     extract.on("error", reject);
   });
 
-  // אם יש תיקיית בן אחת (למשל build/build/), נעביר תכולה לשורש
+  // אם יש תיקיית-בן אחת (למשל build/build/), נרים את התכולה לשורש
   const entries = fs.readdirSync(buildDir);
   if (entries.length === 1) {
     const only = path.join(buildDir, entries[0]);
@@ -100,10 +115,11 @@ export default async function fetchFrontendFromS3() {
   return { ok, latestKey: latest };
 }
 
-// אם מריצים ישירות (prestart)
+// הרצה ישירה (prestart)
 if (import.meta.url === `file://${__filename}`) {
   fetchFrontendFromS3().then(
     () => process.exit(0),
     (e) => { console.error(e); process.exit(1); }
   );
 }
+```
