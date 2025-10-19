@@ -11,7 +11,7 @@
     "@aws-sdk/client-s3": "^3.670.0",
     "@supabase/supabase-js": "^2.45.0",
     "express": "^4.19.2"
-  }
+  },
   "scripts": {
     "start": "node server.js",
     "build": "mkdir -p build && echo '<!doctype html><html><head><meta charset=\"utf-8\"><title>Backup Server</title></head><body><h1>✅ Backup server is running</h1></body></html>' > build/index.html"
