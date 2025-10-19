@@ -1,5 +1,10 @@
 import express from "express";
+import path from "path";                    // ← הוסף
+import { fileURLToPath } from "url";        // ← הוסף
 import { createClient } from "@supabase/supabase-js";
+
+const __filename = fileURLToPath(import.meta.url); // ← הוסף
+const __dirname = path.dirname(__filename);        // ← הוסף
 
 const app = express();
 app.use(express.json());
@@ -32,7 +37,15 @@ app.post("/api/backupDatabaseScheduler", auth, async (_req, res) => {
   res.json({ ok: true, ranAt: new Date().toISOString(), tz: TZ });
 });
 
-// אפשר להוסיף כאן בהמשך endpoints תואמים ל-Base44 לפי הצורך
+// ========= NEW: הגשת ה-Frontend מהתיקייה build =========
+const buildDir = path.join(__dirname, "build");
+app.use(express.static(buildDir));
+
+// לכל Route שלא מתחיל ב-/api → החזר את index.html (SPA)
+app.get(/^\/(?!api\/).*$/, (req, res) => {
+  res.sendFile(path.join(buildDir, "index.html"));
+});
+// ========================================================
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("DR backup server listening on", port));
